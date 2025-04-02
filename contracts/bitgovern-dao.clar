@@ -123,6 +123,18 @@
   )
 )
 
+(define-private (is-valid-btc-address (address (buff 33)))
+  (begin
+    ;; Check that the buffer is exactly 33 bytes (redundant with type but explicit)
+    (asserts! (is-eq (len address) u33) false)
+    
+    ;; Check that the first byte is valid for a Bitcoin address (0x02 or 0x03 for compressed public keys)
+    (let ((first-byte (unwrap-panic (element-at address u0))))
+      (or (is-eq first-byte 0x02) (is-eq first-byte 0x03))
+    )
+  )
+)
+
 ;; Initialize contract
 (define-public (initialize-dao (initial-owner principal) (initial-sbtc-custodian principal))
   (begin
@@ -230,6 +242,9 @@
     (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
     (asserts! (> btc-amount u0) ERR_INVALID_AMOUNT)
     (asserts! (<= btc-amount (var-get btc-treasury-balance)) ERR_INSUFFICIENT_BALANCE)
+
+	;; Validate Bitcoin address format
+    (asserts! (is-valid-btc-address btc-recipient) ERR_INVALID_INPUT)
     
     ;; Validate title - ensure not empty
     (asserts! (> (len title) u0) ERR_INVALID_INPUT)
