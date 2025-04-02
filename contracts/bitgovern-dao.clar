@@ -103,3 +103,85 @@
     (ok true)
   )
 )
+
+;; DAO Membership Functions
+
+(define-public (add-member (new-member principal) (voting-power uint))
+  (begin
+    (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
+    
+    (map-set members
+      { address: new-member }
+      { voting-power: voting-power, joined-at-block: block-height }
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (remove-member (member principal))
+  (begin
+    (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
+    (asserts! (not (is-eq member tx-sender)) ERR_UNAUTHORIZED)
+    
+    (map-delete members { address: member })
+    
+    (ok true)
+  )
+)
+
+(define-public (update-voting-power (member principal) (new-voting-power uint))
+  (let ((member-data (get-member-data member)))
+    (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
+    (asserts! (is-some member-data) ERR_UNAUTHORIZED)
+    
+    (map-set members
+      { address: member }
+      (merge (unwrap! member-data ERR_UNAUTHORIZED) { voting-power: new-voting-power })
+    )
+    
+    (ok true)
+  )
+)
+
+;; Proposal Creation and Management
+
+(define-public (create-btc-transfer-proposal 
+  (title (string-ascii 100))
+  (description (string-utf8 1000))
+  (btc-recipient (buff 33))
+  (btc-amount uint)
+)
+  (begin
+    (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
+    (asserts! (> btc-amount u0) ERR_INVALID_AMOUNT)
+    
+    ;; Charge proposal fee
+    (try! (stx-transfer? (var-get proposal-fee) tx-sender (as-contract tx-sender)))
+    
+    (let ((proposal-id (var-get next-proposal-id)))
+      (map-set proposals
+        { proposal-id: proposal-id }
+        {
+          creator: tx-sender,
+          title: title,
+          description: description,
+          proposal-type: PROPOSAL_TYPE_BTC_TRANSFER,
+          btc-recipient: (some btc-recipient),
+          btc-amount: (some btc-amount),
+          parameter-key: none,
+          parameter-value: none,
+          member-address: none,
+          member-action: none,
+          created-at-block: block-height,
+          votes-for: u0,
+          votes-against: u0,
+          executed: false
+        }
+      )
+      
+      (var-set next-proposal-id (+ proposal-id u1))
+      (ok proposal-id)
+    )
+  )
+)
