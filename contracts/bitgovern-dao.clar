@@ -264,3 +264,77 @@
     )
   )
 )
+
+;; Voting Functions
+
+(define-public (vote-on-proposal (proposal-id uint) (vote-for bool))
+  (let (
+    (proposal (unwrap! (map-get? proposals { proposal-id: proposal-id }) ERR_PROPOSAL_NOT_FOUND))
+    (voting-power (get-voting-power tx-sender))
+  )
+    ;; Check if user is a member
+    (asserts! (> voting-power u0) ERR_UNAUTHORIZED)
+    
+    ;; Check if proposal is still in voting period
+    (asserts! (<= (+ (get created-at-block proposal) (var-get voting-period)) block-height) ERR_VOTING_PERIOD_ENDED)
+    (asserts! (>= block-height (get created-at-block proposal)) ERR_VOTING_PERIOD_ACTIVE)
+    
+    ;; Check if user has already voted
+    (asserts! (is-none (map-get? proposal-votes { proposal-id: proposal-id, voter: tx-sender })) ERR_ALREADY_VOTED)
+    
+    ;; Record the vote
+    (map-set proposal-votes 
+      { proposal-id: proposal-id, voter: tx-sender } 
+      { voted-for: vote-for }
+    )
+    
+    ;; Update vote counts
+    (map-set proposals
+      { proposal-id: proposal-id }
+      (merge proposal 
+        {
+          votes-for: (if vote-for (+ (get votes-for proposal) voting-power) (get votes-for proposal)),
+          votes-against: (if vote-for (get votes-against proposal) (+ (get votes-against proposal) voting-power))
+        }
+      )
+    )
+    
+    (ok true)
+  )
+)
+
+;; Proposal Execution
+
+(define-public (execute-proposal (proposal-id uint))
+  (let (
+    (proposal (unwrap! (map-get? proposals { proposal-id: proposal-id }) ERR_PROPOSAL_NOT_FOUND))
+    (total-votes (+ (get votes-for proposal) (get votes-against proposal)))
+    (total-voting-power (get-total-voting-power))
+  )
+    ;; Check if voting period has ended
+    (asserts! (>= block-height (+ (get created-at-block proposal) (var-get voting-period))) ERR_VOTING_PERIOD_ACTIVE)
+    
+    ;; Check that proposal hasn't been executed
+    (asserts! (not (get executed proposal)) ERR_PROPOSAL_ALREADY_EXECUTED)
+    
+    ;; Check quorum
+    (asserts! (>= (* total-votes u1000) (* total-voting-power (var-get quorum-threshold))) ERR_QUORUM_NOT_REACHED)
+    
+    ;; Check if proposal was approved
+    (asserts! (>= (* (get votes-for proposal) u1000) (* total-votes (var-get majority-threshold))) ERR_PROPOSAL_REJECTED)
+    
+    ;; Mark as executed
+    (map-set proposals
+      { proposal-id: proposal-id }
+      (merge proposal { executed: true })
+    )
+    
+    ;; Execute the specific action based on proposal type
+    (match (get proposal-type proposal)
+      PROPOSAL_TYPE_BTC_TRANSFER (execute-btc-transfer proposal)
+      PROPOSAL_TYPE_PARAMETERS_CHANGE (execute-parameter-change proposal)
+      PROPOSAL_TYPE_MEMBERSHIP (execute-membership-change proposal)
+      ERR_INVALID_PROPOSAL_TYPE
+    )
+  )
+)
