@@ -411,3 +411,38 @@
     (ok true)
   )
 )
+
+(define-private (execute-membership-change (proposal {
+  creator: principal,
+  title: (string-ascii 100),
+  description: (string-utf8 1000),
+  proposal-type: uint,
+  btc-recipient: (optional (buff 33)),
+  btc-amount: (optional uint),
+  parameter-key: (optional (string-ascii 50)),
+  parameter-value: (optional uint),
+  member-address: (optional principal),
+  member-action: (optional bool),
+  created-at-block: uint,
+  votes-for: uint,
+  votes-against: uint,
+  executed: bool
+}))
+  (let (
+    (member (unwrap! (get member-address proposal) ERR_INVALID_PROPOSAL_TYPE))
+    (action (unwrap! (get member-action proposal) ERR_INVALID_PROPOSAL_TYPE))
+    (voting-power (unwrap! (get parameter-value proposal) ERR_INVALID_PROPOSAL_TYPE))
+  )
+    (if action
+      ;; Add or update member
+      (map-set members
+        { address: member }
+        { voting-power: voting-power, joined-at-block: block-height }
+      )
+      ;; Remove member
+      (map-delete members { address: member })
+    )
+    
+    (ok true)
+  )
+)
