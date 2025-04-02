@@ -338,3 +338,76 @@
     )
   )
 )
+
+;; Type-specific execution functions
+
+(define-private (execute-btc-transfer (proposal {
+  creator: principal,
+  title: (string-ascii 100),
+  description: (string-utf8 1000),
+  proposal-type: uint,
+  btc-recipient: (optional (buff 33)),
+  btc-amount: (optional uint),
+  parameter-key: (optional (string-ascii 50)),
+  parameter-value: (optional uint),
+  member-address: (optional principal),
+  member-action: (optional bool),
+  created-at-block: uint,
+  votes-for: uint,
+  votes-against: uint,
+  executed: bool
+}))
+  (let (
+    (recipient (unwrap! (get btc-recipient proposal) ERR_INVALID_PROPOSAL_TYPE))
+    (amount (unwrap! (get btc-amount proposal) ERR_INVALID_PROPOSAL_TYPE))
+    (custodian (unwrap! (var-get sbtc-custodian) ERR_UNAUTHORIZED))
+  )
+    ;; Check if treasury has enough balance
+    (asserts! (>= (var-get btc-treasury-balance) amount) ERR_INSUFFICIENT_BALANCE)
+    
+    ;; Update the treasury balance
+    (var-set btc-treasury-balance (- (var-get btc-treasury-balance) amount))
+    
+    ;; In a real implementation, this would integrate with sBTC or similar
+    ;; to initiate the actual BTC transfer
+    ;; Here we're just recording the intent
+    
+    ;; This would call the sBTC bridge contract to execute the BTC transfer
+    ;; (contract-call? custodian transfer-btc recipient amount)
+    
+    ;; For now, just return success
+    (ok true)
+  )
+)
+
+(define-private (execute-parameter-change (proposal {
+  creator: principal,
+  title: (string-ascii 100),
+  description: (string-utf8 1000),
+  proposal-type: uint,
+  btc-recipient: (optional (buff 33)),
+  btc-amount: (optional uint),
+  parameter-key: (optional (string-ascii 50)),
+  parameter-value: (optional uint),
+  member-address: (optional principal),
+  member-action: (optional bool),
+  created-at-block: uint,
+  votes-for: uint,
+  votes-against: uint,
+  executed: bool
+}))
+  (let (
+    (param-key (unwrap! (get parameter-key proposal) ERR_INVALID_PROPOSAL_TYPE))
+    (param-value (unwrap! (get parameter-value proposal) ERR_INVALID_PROPOSAL_TYPE))
+  )
+    (match param-key
+      "quorum-threshold" (var-set quorum-threshold param-value)
+      "majority-threshold" (var-set majority-threshold param-value)
+      "voting-period" (var-set voting-period param-value)
+      "proposal-fee" (var-set proposal-fee param-value)
+      ERR_INVALID_PROPOSAL_TYPE
+    )
+    
+    (ok true)
+  )
+)
