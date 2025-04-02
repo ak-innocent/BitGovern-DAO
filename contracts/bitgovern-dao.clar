@@ -42,6 +42,7 @@
 (define-data-var majority-threshold uint u500) ;; 50%+ votes for approval
 (define-data-var voting-period uint u144) ;; ~24 hours in blocks (assuming 10 min/block)
 (define-data-var proposal-fee uint u1000000) ;; 1 STX fee to create proposal (prevents spam)
+(define-data-var total-voting-power uint u0) ;; Track total voting power
 
 ;; Track proposals
 (define-map proposals
@@ -94,8 +95,11 @@
     ;; Set the initial owner as a member with high voting power
     (map-set members 
       { address: initial-owner }
-      { voting-power: u1000, joined-at-block: block-height }
+      { voting-power: u1000, joined-at-block: stacks-block-height }
     )
+    
+    ;; Set the initial total voting power
+    (var-set total-voting-power u1000)
     
     ;; Set the sBTC custodian - this would be the contract that handles BTC transfers
     (var-set sbtc-custodian (some initial-sbtc-custodian))
@@ -112,18 +116,30 @@
     
     (map-set members
       { address: new-member }
-      { voting-power: voting-power, joined-at-block: block-height }
+      { voting-power: voting-power, joined-at-block: stacks-block-height }
     )
+    
+    ;; Update total voting power
+    (var-set total-voting-power (+ (var-get total-voting-power) voting-power))
     
     (ok true)
   )
 )
 
 (define-public (remove-member (member principal))
-  (begin
+  (let ((member-data (get-member-data member)))
     (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
     (asserts! (not (is-eq member tx-sender)) ERR_UNAUTHORIZED)
+    (asserts! (is-some member-data) ERR_UNAUTHORIZED)
     
+    ;; Update total voting power by subtracting this member's power
+    (var-set total-voting-power 
+      (- (var-get total-voting-power) 
+         (get voting-power (unwrap! member-data ERR_UNAUTHORIZED))
+      )
+    )
+    
+    ;; Remove the member
     (map-delete members { address: member })
     
     (ok true)
@@ -135,12 +151,28 @@
     (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
     (asserts! (is-some member-data) ERR_UNAUTHORIZED)
     
-    (map-set members
-      { address: member }
-      (merge (unwrap! member-data ERR_UNAUTHORIZED) { voting-power: new-voting-power })
+    ;; Calculate the difference in voting power
+    (let ((old-voting-power (get voting-power (unwrap! member-data ERR_UNAUTHORIZED)))
+          (power-difference (if (> new-voting-power old-voting-power)
+                              (- new-voting-power old-voting-power)
+                              (- old-voting-power new-voting-power))))
+      
+      ;; Update the total voting power
+      (var-set total-voting-power 
+        (if (> new-voting-power old-voting-power)
+          (+ (var-get total-voting-power) power-difference)
+          (- (var-get total-voting-power) power-difference)
+        )
+      )
+      
+      ;; Update the member's voting power
+      (map-set members
+        { address: member }
+        (merge (unwrap! member-data ERR_UNAUTHORIZED) { voting-power: new-voting-power })
+      )
+      
+      (ok true)
     )
-    
-    (ok true)
   )
 )
 
@@ -173,7 +205,7 @@
           parameter-value: none,
           member-address: none,
           member-action: none,
-          created-at-block: block-height,
+          created-at-block: stacks-block-height,
           votes-for: u0,
           votes-against: u0,
           executed: false
@@ -212,7 +244,7 @@
           parameter-value: (some parameter-value),
           member-address: none,
           member-action: none,
-          created-at-block: block-height,
+          created-at-block: stacks-block-height,
           votes-for: u0,
           votes-against: u0,
           executed: false
@@ -229,7 +261,7 @@
   (title (string-ascii 100))
   (description (string-utf8 1000))
   (member-address principal)
-  (add-member bool)
+  (is-add-member bool)
   (voting-power uint)
 )
   (begin
@@ -251,8 +283,8 @@
           parameter-key: (some "voting-power"),
           parameter-value: (some voting-power),
           member-address: (some member-address),
-          member-action: (some add-member),
-          created-at-block: block-height,
+          member-action: (some is-add-member),
+          created-at-block: stacks-block-height,
           votes-for: u0,
           votes-against: u0,
           executed: false
@@ -276,8 +308,8 @@
     (asserts! (> voting-power u0) ERR_UNAUTHORIZED)
     
     ;; Check if proposal is still in voting period
-    (asserts! (<= (+ (get created-at-block proposal) (var-get voting-period)) block-height) ERR_VOTING_PERIOD_ENDED)
-    (asserts! (>= block-height (get created-at-block proposal)) ERR_VOTING_PERIOD_ACTIVE)
+    (asserts! (<= (+ (get created-at-block proposal) (var-get voting-period)) stacks-block-height) ERR_VOTING_PERIOD_ENDED)
+    (asserts! (>= stacks-block-height (get created-at-block proposal)) ERR_VOTING_PERIOD_ACTIVE)
     
     ;; Check if user has already voted
     (asserts! (is-none (map-get? proposal-votes { proposal-id: proposal-id, voter: tx-sender })) ERR_ALREADY_VOTED)
@@ -309,16 +341,17 @@
   (let (
     (proposal (unwrap! (map-get? proposals { proposal-id: proposal-id }) ERR_PROPOSAL_NOT_FOUND))
     (total-votes (+ (get votes-for proposal) (get votes-against proposal)))
-    (total-voting-power (get-total-voting-power))
+    (total-voting-power-current (var-get total-voting-power))
+    (prop-type (get proposal-type proposal))
   )
     ;; Check if voting period has ended
-    (asserts! (>= block-height (+ (get created-at-block proposal) (var-get voting-period))) ERR_VOTING_PERIOD_ACTIVE)
+    (asserts! (>= stacks-block-height (+ (get created-at-block proposal) (var-get voting-period))) ERR_VOTING_PERIOD_ACTIVE)
     
     ;; Check that proposal hasn't been executed
     (asserts! (not (get executed proposal)) ERR_PROPOSAL_ALREADY_EXECUTED)
     
     ;; Check quorum
-    (asserts! (>= (* total-votes u1000) (* total-voting-power (var-get quorum-threshold))) ERR_QUORUM_NOT_REACHED)
+    (asserts! (>= (* total-votes u1000) (* total-voting-power-current (var-get quorum-threshold))) ERR_QUORUM_NOT_REACHED)
     
     ;; Check if proposal was approved
     (asserts! (>= (* (get votes-for proposal) u1000) (* total-votes (var-get majority-threshold))) ERR_PROPOSAL_REJECTED)
@@ -330,11 +363,15 @@
     )
     
     ;; Execute the specific action based on proposal type
-    (match (get proposal-type proposal)
-      PROPOSAL_TYPE_BTC_TRANSFER (execute-btc-transfer proposal)
-      PROPOSAL_TYPE_PARAMETERS_CHANGE (execute-parameter-change proposal)
-      PROPOSAL_TYPE_MEMBERSHIP (execute-membership-change proposal)
-      ERR_INVALID_PROPOSAL_TYPE
+    (if (is-eq prop-type PROPOSAL_TYPE_BTC_TRANSFER)
+      (execute-btc-transfer proposal)
+      (if (is-eq prop-type PROPOSAL_TYPE_PARAMETERS_CHANGE)
+        (execute-parameter-change proposal)
+        (if (is-eq prop-type PROPOSAL_TYPE_MEMBERSHIP)
+          (execute-membership-change proposal)
+          ERR_INVALID_PROPOSAL_TYPE
+        )
+      )
     )
   )
 )
@@ -400,15 +437,32 @@
     (param-key (unwrap! (get parameter-key proposal) ERR_INVALID_PROPOSAL_TYPE))
     (param-value (unwrap! (get parameter-value proposal) ERR_INVALID_PROPOSAL_TYPE))
   )
-    (match param-key
-      "quorum-threshold" (var-set quorum-threshold param-value)
-      "majority-threshold" (var-set majority-threshold param-value)
-      "voting-period" (var-set voting-period param-value)
-      "proposal-fee" (var-set proposal-fee param-value)
-      ERR_INVALID_PROPOSAL_TYPE
+    ;; Set parameter based on key
+    (if (is-eq param-key "quorum-threshold")
+      (begin
+        (var-set quorum-threshold param-value)
+        (ok true)
+      )
+      (if (is-eq param-key "majority-threshold")
+        (begin
+          (var-set majority-threshold param-value)
+          (ok true)
+        )
+        (if (is-eq param-key "voting-period")
+          (begin
+            (var-set voting-period param-value)
+            (ok true)
+          )
+          (if (is-eq param-key "proposal-fee")
+            (begin
+              (var-set proposal-fee param-value)
+              (ok true)
+            )
+            ERR_INVALID_PROPOSAL_TYPE
+          )
+        )
+      )
     )
-    
-    (ok true)
   )
 )
 
@@ -435,12 +489,44 @@
   )
     (if action
       ;; Add or update member
-      (map-set members
-        { address: member }
-        { voting-power: voting-power, joined-at-block: block-height }
+      (begin
+        ;; Check if member already exists to properly update total voting power
+        (let ((existing-member-data (get-member-data member)))
+          (if (is-some existing-member-data)
+            ;; Update existing member's voting power
+            (let ((old-power (get voting-power (unwrap-panic existing-member-data))))
+              (var-set total-voting-power 
+                (+ (- (var-get total-voting-power) old-power) voting-power)
+              )
+            )
+            ;; Add new member's voting power to total
+            (var-set total-voting-power (+ (var-get total-voting-power) voting-power))
+          )
+        )
+        
+        ;; Add or update the member
+        (map-set members
+          { address: member }
+          { voting-power: voting-power, joined-at-block: stacks-block-height }
+        )
       )
       ;; Remove member
-      (map-delete members { address: member })
+      (begin
+        ;; Get the member's voting power and subtract from total
+        (let ((member-data (get-member-data member)))
+          (if (is-some member-data)
+            (var-set total-voting-power 
+              (- (var-get total-voting-power) 
+                (get voting-power (unwrap-panic member-data))
+              )
+            )
+            true ;; If member doesn't exist, no change needed
+          )
+        )
+        
+        ;; Remove the member
+        (map-delete members { address: member })
+      )
     )
     
     (ok true)
@@ -462,11 +548,11 @@
 )
 
 (define-read-only (get-voting-power (address principal))
-  (default-to u0 (get voting-power (default-to { voting-power: u0, joined-at-block: u0 } (map-get? members { address: address }))))
+  (get voting-power (default-to { voting-power: u0, joined-at-block: u0 } (map-get? members { address: address })))
 )
 
 (define-read-only (get-total-voting-power)
-  (fold + (map get-voting-power (map get address (map-keys members))) u0)
+  (var-get total-voting-power)
 )
 
 (define-read-only (get-vote (proposal-id uint) (voter principal))
@@ -482,12 +568,12 @@
       (let (
         (proposal (unwrap-panic proposal-opt))
         (total-votes (+ (get votes-for proposal) (get votes-against proposal)))
-        (total-voting-power (get-total-voting-power))
+        (total-voting-power-current (var-get total-voting-power))
       )
         (and
-          (>= block-height (+ (get created-at-block proposal) (var-get voting-period)))
+          (>= stacks-block-height (+ (get created-at-block proposal) (var-get voting-period)))
           (not (get executed proposal))
-          (>= (* total-votes u1000) (* total-voting-power (var-get quorum-threshold)))
+          (>= (* total-votes u1000) (* total-voting-power-current (var-get quorum-threshold)))
           (>= (* (get votes-for proposal) u1000) (* total-votes (var-get majority-threshold)))
         )
       )
@@ -508,11 +594,4 @@
 
 (define-read-only (get-treasury-balance)
   (var-get btc-treasury-balance)
-)
-
-;; Folding function for total voting power calculation
-(define-private (add-voting-power (key { address: principal }) (acc uint))
-  (let ((member-data (unwrap! (map-get? members key) acc)))
-    (+ acc (get voting-power member-data))
-  )
 )
