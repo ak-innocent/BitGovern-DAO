@@ -446,3 +446,73 @@
     (ok true)
   )
 )
+
+;; Utility/Helper Functions
+
+(define-read-only (get-proposal (proposal-id uint))
+  (map-get? proposals { proposal-id: proposal-id })
+)
+
+(define-read-only (get-member-data (address principal))
+  (map-get? members { address: address })
+)
+
+(define-read-only (is-dao-member (address principal))
+  (is-some (map-get? members { address: address }))
+)
+
+(define-read-only (get-voting-power (address principal))
+  (default-to u0 (get voting-power (default-to { voting-power: u0, joined-at-block: u0 } (map-get? members { address: address }))))
+)
+
+(define-read-only (get-total-voting-power)
+  (fold + (map get-voting-power (map get address (map-keys members))) u0)
+)
+
+(define-read-only (get-vote (proposal-id uint) (voter principal))
+  (map-get? proposal-votes { proposal-id: proposal-id, voter: voter })
+)
+
+(define-read-only (can-execute-proposal (proposal-id uint))
+  (let (
+    (proposal-opt (map-get? proposals { proposal-id: proposal-id }))
+  )
+    (if (is-none proposal-opt)
+      false
+      (let (
+        (proposal (unwrap-panic proposal-opt))
+        (total-votes (+ (get votes-for proposal) (get votes-against proposal)))
+        (total-voting-power (get-total-voting-power))
+      )
+        (and
+          (>= block-height (+ (get created-at-block proposal) (var-get voting-period)))
+          (not (get executed proposal))
+          (>= (* total-votes u1000) (* total-voting-power (var-get quorum-threshold)))
+          (>= (* (get votes-for proposal) u1000) (* total-votes (var-get majority-threshold)))
+        )
+      )
+    )
+  )
+)
+
+;; Treasury management functions
+
+(define-public (deposit-btc (amount uint))
+  (begin
+    ;; In a real implementation, this would verify a BTC deposit through sBTC
+    ;; For now, we just update the balance
+    (var-set btc-treasury-balance (+ (var-get btc-treasury-balance) amount))
+    (ok true)
+  )
+)
+
+(define-read-only (get-treasury-balance)
+  (var-get btc-treasury-balance)
+)
+
+;; Folding function for total voting power calculation
+(define-private (add-voting-power (key { address: principal }) (acc uint))
+  (let ((member-data (unwrap! (map-get? members key) acc)))
+    (+ acc (get voting-power member-data))
+  )
+)
