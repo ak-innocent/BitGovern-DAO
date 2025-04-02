@@ -185,3 +185,82 @@
     )
   )
 )
+
+(define-public (create-parameter-change-proposal
+  (title (string-ascii 100))
+  (description (string-utf8 1000))
+  (parameter-key (string-ascii 50))
+  (parameter-value uint)
+)
+  (begin
+    (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
+    
+    ;; Charge proposal fee
+    (try! (stx-transfer? (var-get proposal-fee) tx-sender (as-contract tx-sender)))
+    
+    (let ((proposal-id (var-get next-proposal-id)))
+      (map-set proposals
+        { proposal-id: proposal-id }
+        {
+          creator: tx-sender,
+          title: title,
+          description: description,
+          proposal-type: PROPOSAL_TYPE_PARAMETERS_CHANGE,
+          btc-recipient: none,
+          btc-amount: none,
+          parameter-key: (some parameter-key),
+          parameter-value: (some parameter-value),
+          member-address: none,
+          member-action: none,
+          created-at-block: block-height,
+          votes-for: u0,
+          votes-against: u0,
+          executed: false
+        }
+      )
+      
+      (var-set next-proposal-id (+ proposal-id u1))
+      (ok proposal-id)
+    )
+  )
+)
+
+(define-public (create-membership-proposal
+  (title (string-ascii 100))
+  (description (string-utf8 1000))
+  (member-address principal)
+  (add-member bool)
+  (voting-power uint)
+)
+  (begin
+    (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
+    
+    ;; Charge proposal fee
+    (try! (stx-transfer? (var-get proposal-fee) tx-sender (as-contract tx-sender)))
+    
+    (let ((proposal-id (var-get next-proposal-id)))
+      (map-set proposals
+        { proposal-id: proposal-id }
+        {
+          creator: tx-sender,
+          title: title,
+          description: description,
+          proposal-type: PROPOSAL_TYPE_MEMBERSHIP,
+          btc-recipient: none,
+          btc-amount: none,
+          parameter-key: (some "voting-power"),
+          parameter-value: (some voting-power),
+          member-address: (some member-address),
+          member-action: (some add-member),
+          created-at-block: block-height,
+          votes-for: u0,
+          votes-against: u0,
+          executed: false
+        }
+      )
+      
+      (var-set next-proposal-id (+ proposal-id u1))
+      (ok proposal-id)
+    )
+  )
+)
