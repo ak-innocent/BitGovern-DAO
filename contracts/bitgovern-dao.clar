@@ -31,6 +31,7 @@
 (define-constant ERR_PROPOSAL_ALREADY_EXECUTED (err u108))
 (define-constant ERR_INVALID_AMOUNT (err u109))
 (define-constant ERR_PROPOSAL_REJECTED (err u110))
+(define-constant ERR_INVALID_INPUT (err u111))
 
 ;; Proposal types
 (define-constant PROPOSAL_TYPE_BTC_TRANSFER u1)
@@ -43,6 +44,7 @@
 (define-data-var voting-period uint u144) ;; ~24 hours in blocks (assuming 10 min/block)
 (define-data-var proposal-fee uint u1000000) ;; 1 STX fee to create proposal (prevents spam)
 (define-data-var total-voting-power uint u0) ;; Track total voting power
+(define-data-var max-voting-power uint u10000) ;; Maximum allowed voting power for a single member
 
 ;; Track proposals
 (define-map proposals
@@ -87,10 +89,46 @@
 (define-data-var btc-treasury-balance uint u0)
 (define-data-var sbtc-custodian (optional principal) none)
 
+;; Validation functions
+(define-private (is-valid-voting-power (power uint))
+  (and (> power u0) (<= power (var-get max-voting-power)))
+)
+
+(define-private (is-valid-parameter-key (key (string-ascii 50)))
+  (or
+    (is-eq key "quorum-threshold")
+    (is-eq key "majority-threshold")
+    (is-eq key "voting-period")
+    (is-eq key "proposal-fee")
+    (is-eq key "max-voting-power")
+  )
+)
+
+(define-private (is-valid-parameter-value (key (string-ascii 50)) (value uint))
+  (if (is-eq key "quorum-threshold")
+    (and (>= value u501) (<= value u1000)) ;; Must be majority+1 to 100%
+    (if (is-eq key "majority-threshold")
+      (and (>= value u1) (<= value u1000)) ;; 0.1% to 100%
+      (if (is-eq key "voting-period")
+        (and (>= value u6) (<= value u8640)) ;; ~1hr to ~60 days
+        (if (is-eq key "proposal-fee")
+          (and (>= value u0) (<= value u1000000000)) ;; 0 to 1000 STX
+          (if (is-eq key "max-voting-power")
+            (and (>= value u1000) (<= value u1000000)) ;; Reasonable range for max power
+            false
+          )
+        )
+      )
+    )
+  )
+)
+
 ;; Initialize contract
 (define-public (initialize-dao (initial-owner principal) (initial-sbtc-custodian principal))
   (begin
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    (asserts! (not (is-eq initial-owner tx-sender)) ERR_INVALID_INPUT) ;; Prevent self-assignment
+    (asserts! (not (is-eq initial-sbtc-custodian tx-sender)) ERR_INVALID_INPUT) ;; Prevent self-assignment
     
     ;; Set the initial owner as a member with high voting power
     (map-set members 
@@ -113,6 +151,9 @@
 (define-public (add-member (new-member principal) (voting-power uint))
   (begin
     (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
+    (asserts! (not (is-eq new-member tx-sender)) ERR_INVALID_INPUT) ;; Prevent self-addition
+    (asserts! (is-valid-voting-power voting-power) ERR_INVALID_INPUT)
+    (asserts! (not (is-dao-member new-member)) ERR_INVALID_INPUT) ;; Don't add existing members
     
     (map-set members
       { address: new-member }
@@ -150,6 +191,7 @@
   (let ((member-data (get-member-data member)))
     (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
     (asserts! (is-some member-data) ERR_UNAUTHORIZED)
+    (asserts! (is-valid-voting-power new-voting-power) ERR_INVALID_INPUT)
     
     ;; Calculate the difference in voting power
     (let ((old-voting-power (get voting-power (unwrap! member-data ERR_UNAUTHORIZED)))
@@ -187,6 +229,13 @@
   (begin
     (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
     (asserts! (> btc-amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (<= btc-amount (var-get btc-treasury-balance)) ERR_INSUFFICIENT_BALANCE)
+    
+    ;; Validate title - ensure not empty
+    (asserts! (> (len title) u0) ERR_INVALID_INPUT)
+    
+    ;; Validate description - ensure not empty
+    (asserts! (> (len description) u0) ERR_INVALID_INPUT)
     
     ;; Charge proposal fee
     (try! (stx-transfer? (var-get proposal-fee) tx-sender (as-contract tx-sender)))
@@ -226,6 +275,18 @@
 )
   (begin
     (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
+    
+    ;; Validate title - ensure not empty
+    (asserts! (> (len title) u0) ERR_INVALID_INPUT)
+    
+    ;; Validate description - ensure not empty
+    (asserts! (> (len description) u0) ERR_INVALID_INPUT)
+    
+    ;; Validate parameter key is recognized
+    (asserts! (is-valid-parameter-key parameter-key) ERR_INVALID_INPUT)
+    
+    ;; Validate parameter value is within allowed range
+    (asserts! (is-valid-parameter-value parameter-key parameter-value) ERR_INVALID_INPUT)
     
     ;; Charge proposal fee
     (try! (stx-transfer? (var-get proposal-fee) tx-sender (as-contract tx-sender)))
@@ -267,6 +328,26 @@
   (begin
     (asserts! (is-dao-member tx-sender) ERR_UNAUTHORIZED)
     
+    ;; Validate title - ensure not empty
+    (asserts! (> (len title) u0) ERR_INVALID_INPUT)
+    
+    ;; Validate description - ensure not empty
+    (asserts! (> (len description) u0) ERR_INVALID_INPUT)
+    
+    ;; Validate voting power
+    (asserts! (is-valid-voting-power voting-power) ERR_INVALID_INPUT)
+    
+    ;; Additional validations for add/remove
+    (if is-add-member
+      ;; For adding, ensure member doesn't already exist
+      (asserts! (not (is-dao-member member-address)) ERR_INVALID_INPUT)
+      ;; For removing, ensure member exists and isn't the sender
+      (begin
+        (asserts! (is-dao-member member-address) ERR_INVALID_INPUT)
+        (asserts! (not (is-eq member-address tx-sender)) ERR_INVALID_INPUT)
+      )
+    )
+    
     ;; Charge proposal fee
     (try! (stx-transfer? (var-get proposal-fee) tx-sender (as-contract tx-sender)))
     
@@ -307,6 +388,9 @@
     ;; Check if user is a member
     (asserts! (> voting-power u0) ERR_UNAUTHORIZED)
     
+    ;; Validate proposal-id
+    (asserts! (< proposal-id (var-get next-proposal-id)) ERR_INVALID_INPUT)
+    
     ;; Check if proposal is still in voting period
     (asserts! (<= (+ (get created-at-block proposal) (var-get voting-period)) stacks-block-height) ERR_VOTING_PERIOD_ENDED)
     (asserts! (>= stacks-block-height (get created-at-block proposal)) ERR_VOTING_PERIOD_ACTIVE)
@@ -344,6 +428,9 @@
     (total-voting-power-current (var-get total-voting-power))
     (prop-type (get proposal-type proposal))
   )
+    ;; Validate proposal-id
+    (asserts! (< proposal-id (var-get next-proposal-id)) ERR_INVALID_INPUT)
+    
     ;; Check if voting period has ended
     (asserts! (>= stacks-block-height (+ (get created-at-block proposal) (var-get voting-period))) ERR_VOTING_PERIOD_ACTIVE)
     
@@ -437,6 +524,10 @@
     (param-key (unwrap! (get parameter-key proposal) ERR_INVALID_PROPOSAL_TYPE))
     (param-value (unwrap! (get parameter-value proposal) ERR_INVALID_PROPOSAL_TYPE))
   )
+    ;; Validate parameter key and value
+    (asserts! (is-valid-parameter-key param-key) ERR_INVALID_INPUT)
+    (asserts! (is-valid-parameter-value param-key param-value) ERR_INVALID_INPUT)
+    
     ;; Set parameter based on key
     (if (is-eq param-key "quorum-threshold")
       (begin
@@ -458,7 +549,13 @@
               (var-set proposal-fee param-value)
               (ok true)
             )
-            ERR_INVALID_PROPOSAL_TYPE
+            (if (is-eq param-key "max-voting-power")
+              (begin
+                (var-set max-voting-power param-value)
+                (ok true)
+              )
+              ERR_INVALID_PROPOSAL_TYPE
+            )
           )
         )
       )
@@ -487,6 +584,20 @@
     (action (unwrap! (get member-action proposal) ERR_INVALID_PROPOSAL_TYPE))
     (voting-power (unwrap! (get parameter-value proposal) ERR_INVALID_PROPOSAL_TYPE))
   )
+    ;; Validate voting power
+    (asserts! (is-valid-voting-power voting-power) ERR_INVALID_INPUT)
+    
+    ;; Additional validations based on action type
+    (if action
+      ;; For adding, ensure member doesn't already exist
+      (asserts! (not (is-dao-member member)) ERR_INVALID_INPUT)
+      ;; For removing, ensure member exists and isn't a self-removal
+      (begin
+        (asserts! (is-dao-member member) ERR_INVALID_INPUT)
+        (asserts! (not (is-eq member tx-sender)) ERR_INVALID_INPUT)
+      )
+    )
+    
     (if action
       ;; Add or update member
       (begin
@@ -536,7 +647,11 @@
 ;; Utility/Helper Functions
 
 (define-read-only (get-proposal (proposal-id uint))
-  (map-get? proposals { proposal-id: proposal-id })
+  (begin
+    ;; Validate proposal-id exists
+    (asserts! (< proposal-id (var-get next-proposal-id)) ERR_INVALID_INPUT)
+    (ok (unwrap! (map-get? proposals { proposal-id: proposal-id }) ERR_PROPOSAL_NOT_FOUND))
+  )
 )
 
 (define-read-only (get-member-data (address principal))
@@ -556,7 +671,11 @@
 )
 
 (define-read-only (get-vote (proposal-id uint) (voter principal))
-  (map-get? proposal-votes { proposal-id: proposal-id, voter: voter })
+  (begin
+    ;; Validate proposal-id exists
+    (asserts! (< proposal-id (var-get next-proposal-id)) ERR_INVALID_INPUT)
+    (ok (default-to { voted-for: false } (map-get? proposal-votes { proposal-id: proposal-id, voter: voter })))
+  )
 )
 
 (define-read-only (can-execute-proposal (proposal-id uint))
@@ -585,6 +704,9 @@
 
 (define-public (deposit-btc (amount uint))
   (begin
+    ;; Validate amount
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    
     ;; In a real implementation, this would verify a BTC deposit through sBTC
     ;; For now, we just update the balance
     (var-set btc-treasury-balance (+ (var-get btc-treasury-balance) amount))
